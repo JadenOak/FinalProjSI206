@@ -29,3 +29,30 @@ wmo_weather_codes = {
     85: "Snow showers",
     95: "Thunderstorm",
 }
+
+cities = {
+    "Ann Arbor": (42.2808, -83.7430),
+    "Detroit": (42.3314, -83.0458),
+    "East Lansing": (42.7360, -84.4839),
+    "Royal Oak": (42.4895, -83.1446),
+    "Flint": (43.0125, -83.6875),
+    "Grand Rapids": (42.9634, -85.6681),
+    "Traverse City": (44.7631, -85.6206),
+}
+
+weather_data = []
+
+for city, (lat, lon) in cities.items():
+    # fetch data from api
+    data = fetch_weather_data(lat, lon)
+    hourly = data['hourly']
+    for i, time in enumerate(hourly["time"]):
+        weather_data.append({
+            "City": city,
+            "Date/Time": time,
+            "Temperature (°C)": hourly["temperature_2m"][i],
+            "Humidity": hourly["relative_humidity_2m"][i],
+            "Wind Speed": hourly["wind_speed_10m"][i],
+            "Weather Code": hourly["weather_code"][i]
+        })
+
