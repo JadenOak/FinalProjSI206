@@ -2,6 +2,7 @@ import requests
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
+import sqlite3
 
 def fetch_weather_data(latitude, longitude):
     url = f"https://api.open-meteo.com/v1/forecast?latitude={latitude}&longitude={longitude}&hourly=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m&timezone=America%2FNew_York"
@@ -119,3 +120,38 @@ plt.title("Weather Description Frequency")
 plt.ylabel('')
 plt.savefig("weather_description_frequency.png")
 plt.close()
+
+# Save to SQLite database
+conn = sqlite3.connect('weather_data.db')
+cursor = conn.cursor()
+
+# Create table
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS WeatherData (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    City TEXT NOT NULL,
+    DateTime TEXT NOT NULL,
+    Temperature REAL,
+    Humidity REAL,
+    WindSpeed REAL,
+    WeatherCode INTEGER,
+    WeatherDescription TEXT
+)
+''')
+print("Table created successfully.")
+
+# Insert data into SQLite using pandas
+try:
+    df.to_sql('WeatherData', conn, if_exists='replace', index=False)
+    print("Data inserted into SQLite database successfully.")
+except Exception as e:
+    print(f"Error inserting data into SQLite: {e}")
+
+# Verify data in the database
+cursor.execute("SELECT COUNT(*) FROM WeatherData")
+count = cursor.fetchone()[0]
+print(f"Number of rows in WeatherData table: {count}")
+
+# Close connection
+conn.commit()
+conn.close()
