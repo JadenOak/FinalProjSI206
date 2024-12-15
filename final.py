@@ -1,13 +1,18 @@
 import requests
 import pandas as pd
+import sqlite3
 import seaborn as sns
 import matplotlib.pyplot as plt
-import sqlite3
 
-def fetch_weather_data(latitude, longitude):
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={latitude}&longitude={longitude}&hourly=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m&timezone=America%2FNew_York"
-    response = requests.get(url)
-    return response.json()
+cities = {
+    "Ann Arbor": (42.2808, -83.7430),
+    "Detroit": (42.3314, -83.0458),
+    "East Lansing": (42.7360, -84.4839),
+    "Royal Oak": (42.4895, -83.1446),
+    "Flint": (43.0125, -83.6875),
+    "Grand Rapids": (42.9634, -85.6681),
+    "Traverse City": (44.7631, -85.6206),
+}
 
 wmo_weather_codes = {
     0: "Clear sky",
@@ -31,47 +36,93 @@ wmo_weather_codes = {
     95: "Thunderstorm",
 }
 
-cities = {
-    "Ann Arbor": (42.2808, -83.7430),
-    "Detroit": (42.3314, -83.0458),
-    "East Lansing": (42.7360, -84.4839),
-    "Royal Oak": (42.4895, -83.1446),
-    "Flint": (43.0125, -83.6875),
-    "Grand Rapids": (42.9634, -85.6681),
-    "Traverse City": (44.7631, -85.6206),
-}
+def fetch_weather_data(latitude, longitude):
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={latitude}&longitude={longitude}&hourly=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m&timezone=America%2FNew_York"
+    response = requests.get(url)
+    return response.json()
+
+def fetch_air_quality_data(latitude, longitude):
+    url = f"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={latitude}&longitude={longitude}&hourly=pm10,pm2_5,ozone&forecast_days=7&domains=cams_global"
+    response = requests.get(url)
+    return response.json()
 
 weather_data = []
 
 for city, (lat, lon) in cities.items():
-    # fetch data from api
-    data = fetch_weather_data(lat, lon)
-    hourly = data['hourly']
-    for i, time in enumerate(hourly["time"]):
+    data = fetch_weather_data(lat, lon)['hourly']
+    for i, time in enumerate(data["time"]):
         weather_data.append({
             "City": city,
             "Date/Time": time,
-            "Temperature (°C)": hourly["temperature_2m"][i],
-            "Humidity": hourly["relative_humidity_2m"][i],
-            "Wind Speed": hourly["wind_speed_10m"][i],
-            "Weather Code": hourly["weather_code"][i]
+            "Temperature (°C)": data["temperature_2m"][i],
+            "Humidity": data["relative_humidity_2m"][i],
+            "Wind Speed": data["wind_speed_10m"][i],
+            "Weather Code": data["weather_code"][i]
         })
 
-df = pd.DataFrame(weather_data)
-df["Weather Description"] = df["Weather Code"].map(wmo_weather_codes)
-df["Weather Description"] = df["Weather Description"].fillna("Unknown")
+weather_df = pd.DataFrame(weather_data)
 
-num_df = df.select_dtypes(include='number')
-avg_df = df.groupby("City")[num_df.columns].mean().reset_index()
+weather_conn = sqlite3.connect("weather_forecast.db")
+weather_df.to_sql("weather_data", weather_conn, if_exists="replace", index=False)
+weather_conn.close()
 
-df = df.drop_duplicates(subset=['Date/Time', 'City'])
+air_quality_data = []
 
-# temperature trends
+for city, (lat, lon) in cities.items():
+    data = fetch_air_quality_data(lat, lon)['hourly']
+    for i, time in enumerate(data["time"]):
+        air_quality_data.append({
+            "City": city,
+            "Date/Time": time,
+            "PM10": data["pm10"][i],
+            "PM2_5": data["pm2_5"][i],
+            "Ozone": data["ozone"][i]
+        })
+
+air_quality_df = pd.DataFrame(air_quality_data)
+
+air_quality_conn = sqlite3.connect("air_quality.db")
+air_quality_df.to_sql("air_quality_data", air_quality_conn, if_exists="replace", index=False)
+air_quality_conn.close()
+weather_conn = sqlite3.connect("weather_forecast.db")
+air_quality_conn = sqlite3.connect("air_quality.db")
+combined_conn = sqlite3.connect("combined_weather_air_quality.db")
+
+weather_df = pd.read_sql("SELECT * FROM weather_data", weather_conn)
+weather_df.to_sql("weather_data", combined_conn, if_exists="replace", index=False)
+air_quality_df = pd.read_sql("SELECT * FROM air_quality_data", air_quality_conn)
+air_quality_df.to_sql("air_quality_data", combined_conn, if_exists="replace", index=False)
+
+weather_conn.close()
+air_quality_conn.close()
+
+# join query
+query = """
+SELECT 
+    w.*, 
+    a.PM10, 
+    a.PM2_5, 
+    a.Ozone
+FROM weather_data w 
+JOIN air_quality_data a 
+ON w.City = a.City AND w."Date/Time" = a."Date/Time"
+"""
+
+# joined data
+result_df = pd.read_sql(query, combined_conn)
+combined_conn.close()
+result_df['City'] = result_df['City'].astype(str)
+
+num_df = result_df.select_dtypes(include='number')
+avg_df = result_df.groupby("City")[num_df.columns].mean().reset_index()
+result_df = result_df.drop_duplicates(subset=['Date/Time', 'City'])
+
+# temp line graph
 sns.set(style="whitegrid")
 plt.figure(figsize=(10, 6))
-ax = sns.lineplot(data=df, x="Date/Time", y="Temperature (°C)", hue="City")
+ax = sns.lineplot(data=result_df, x="Date/Time", y="Temperature (°C)", hue="City")
 
-unique = df["Date/Time"].unique()
+unique = result_df["Date/Time"].unique()
 temp = unique[::12]
 ax.set_xticks(range(0, len(unique), 12))
 ax.set_xticklabels(temp, rotation=45)
@@ -83,7 +134,7 @@ plt.tight_layout()
 plt.savefig("temperature_trends.png")
 plt.close()
 
-# average humidity
+# avg humidity
 plt.figure(figsize=(8, 6))
 sns.barplot(x="City", y="Humidity", data=avg_df)
 plt.title("Average Humidity by City")
@@ -93,7 +144,7 @@ plt.savefig("average_humidity.png")
 plt.close()
 
 # heat map
-pivot_df = df.pivot(index="City", columns="Date/Time", values="Temperature (°C)")
+pivot_df = result_df.pivot(index="City", columns="Date/Time", values="Temperature (°C)")
 plt.figure(figsize=(12, 6))
 heatmap_ax = sns.heatmap(pivot_df, cmap="coolwarm", annot=False)
 heatmap_ax.set_xticks(range(0, len(pivot_df.columns), 12))
@@ -106,52 +157,41 @@ plt.tight_layout()
 plt.savefig("temperature_heatmap.png")
 plt.close()
 
-# weather description
+# pm2.5 air qual
+plt.figure(figsize=(10, 6))
+ax = sns.lineplot(data=result_df, x="Date/Time", y="PM2_5", hue="City")
+ax.set_xticks(range(0, len(unique), 12))
+ax.set_xticklabels(temp, rotation=45)
+
+plt.title("PM2.5 Trends Over Time")
+plt.xlabel("Date/Time")
+plt.ylabel("PM2.5 Levels (µg/m³)")
+plt.tight_layout()
+plt.savefig("pm25_trends.png")
+plt.close()
+
+# pm10 air qual
+plt.figure(figsize=(8, 6))
+sns.barplot(x="City", y="PM10", data=avg_df)
+plt.title("Average PM10 Levels by City")
+plt.xlabel("City")
+plt.ylabel("PM10 Levels (µg/m³)")
+plt.savefig("average_pm10.png")
+plt.close()
+
+result_df["Weather Description"] = result_df["Weather Code"].map(wmo_weather_codes)
+result_df["Weather Description"] = result_df["Weather Description"].fillna("Unknown")
+
 threshold = 0.05  # for 'other' category
-weather_freq = df["Weather Description"].value_counts()
+weather_freq = result_df["Weather Description"].value_counts()
 weather_freq = weather_freq / weather_freq.sum()
 other_freq = weather_freq[weather_freq < threshold].sum()
 weather_freq = weather_freq[weather_freq >= threshold]
 weather_freq["Other"] = other_freq
 
 plt.figure(figsize=(8, 6))
-weather_freq.plot.pie(autopct='%1.1f%%', startangle=90, labels=weather_freq.index)
+weather_freq.plot.pie(autopct='%.1f%%', startangle=90, labels=weather_freq.index)
 plt.title("Weather Description Frequency")
 plt.ylabel('')
 plt.savefig("weather_description_frequency.png")
 plt.close()
-
-# Save to SQLite database
-conn = sqlite3.connect('weather_data.db')
-cursor = conn.cursor()
-
-# Create table
-cursor.execute('''
-CREATE TABLE IF NOT EXISTS WeatherData (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    City TEXT NOT NULL,
-    DateTime TEXT NOT NULL,
-    Temperature REAL,
-    Humidity REAL,
-    WindSpeed REAL,
-    WeatherCode INTEGER,
-    WeatherDescription TEXT
-)
-''')
-print("Table created successfully.")
-
-# Insert data into SQLite using pandas
-try:
-    df.to_sql('WeatherData', conn, if_exists='replace', index=False)
-    print("Data inserted into SQLite database successfully.")
-except Exception as e:
-    print(f"Error inserting data into SQLite: {e}")
-
-# Verify data in the database
-cursor.execute("SELECT COUNT(*) FROM WeatherData")
-count = cursor.fetchone()[0]
-print(f"Number of rows in WeatherData table: {count}")
-
-# Close connection
-conn.commit()
-conn.close()
